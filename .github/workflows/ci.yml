@@ -1,0 +1,198 @@
+name: CI
+
+# Pipeline de Integração Contínua (Fase 1).
+#
+# Executa a cada push e a cada pull request. As etapas são independentes e
+# rodam em paralelo; a etapa final só é concluída quando todas passam, o que
+# torna o resultado do pipeline o critério objetivo para aceitar a integração
+# de uma alteração na branch principal.
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION_PADRAO: "3.12"
+
+jobs:
+  lint:
+    name: Análise estática
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v4
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION_PADRAO }}
+          cache: pip
+
+      - name: Instalar as dependências de desenvolvimento
+        run: pip install -r requirements-dev.txt
+
+      - name: Verificar as regras de lint
+        run: ruff check .
+
+      - name: Verificar a formatação do código
+        run: ruff format --check .
+
+  testes:
+    name: Testes automatizados (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v4
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Instalar as dependências de desenvolvimento
+        run: pip install -r requirements-dev.txt
+
+      - name: Executar a suíte de testes com cobertura mínima de 90%
+        run: pytest --cov-report=xml
+
+      - name: Publicar o relatório de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cobertura-py${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: warn
+
+  seguranca:
+    name: Verificações de segurança
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v4
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION_PADRAO }}
+          cache: pip
+
+      - name: Instalar as dependências de desenvolvimento
+        run: pip install -r requirements-dev.txt
+
+      - name: Procurar padrões inseguros no código com o Bandit
+        run: bandit -r app -ll
+
+      - name: Auditar as dependências com o pip-audit
+        run: pip-audit -r requirements.txt --strict
+
+  infraestrutura:
+    name: Validação da infraestrutura como código
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v4
+
+      - name: Preparar o Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+
+      - name: Verificar a formatação dos arquivos Terraform
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: Inicializar o Terraform sem backend remoto
+        run: terraform -chdir=infra/terraform init -backend=false -input=false
+
+      - name: Validar a configuração do Terraform
+        run: terraform -chdir=infra/terraform validate
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION_PADRAO }}
+
+      - name: Instalar o Ansible
+        run: pip install ansible-core ansible-lint
+
+      - name: Verificar a sintaxe do playbook
+        working-directory: infra/ansible
+        run: ansible-playbook -i inventory.ini playbook.yml --syntax-check
+
+      - name: Analisar o playbook com o ansible-lint
+        working-directory: infra/ansible
+        run: ansible-lint playbook.yml
+
+  imagem:
+    name: Construção da imagem de container
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v4
+
+      - name: Preparar o Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Construir a imagem sem publicar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: inventario-rede:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Subir o container e validar o healthcheck
+        run: |
+          docker run -d --name inventario-ci -p 8000:8000 inventario-rede:ci
+          for tentativa in $(seq 1 20); do
+            estado="$(docker inspect -f '{{.State.Health.Status}}' inventario-ci)"
+            if [ "${estado}" = "healthy" ]; then
+              echo "Container saudável na tentativa ${tentativa}."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "O container não ficou saudável a tempo." >&2
+          docker logs inventario-ci
+          exit 1
+
+      - name: Executar o teste de fumaça contra o container
+        run: ./scripts/smoke-test.sh http://127.0.0.1:8000
+
+      - name: Encerrar o container de verificação
+        if: always()
+        run: docker rm -f inventario-ci || true
+
+  integracao-aprovada:
+    name: Integração aprovada
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - testes
+      - seguranca
+      - infraestrutura
+      - imagem
+    steps:
+      - name: Consolidar o resultado do pipeline
+        run: echo "Todas as verificações de integração contínua foram aprovadas."
