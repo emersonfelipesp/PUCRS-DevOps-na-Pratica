@@ -1,0 +1,33 @@
+# Regras de alerta avaliadas pelo Prometheus sobre as métricas da API.
+groups:
+  - name: inventario-api
+    rules:
+      - alert: ApiIndisponivel
+        expr: up{job="inventario-api"} == 0
+        for: 1m
+        labels:
+          severidade: critica
+        annotations:
+          resumo: "A API de inventário não está respondendo à coleta."
+
+      - alert: TaxaDeErro5xxAlta
+        expr: |
+          sum(rate(inventario_http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(inventario_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severidade: alta
+        annotations:
+          resumo: "Mais de 5% das requisições estão retornando erro do servidor."
+
+      - alert: LatenciaElevada
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(inventario_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severidade: media
+        annotations:
+          resumo: "O percentil 95 de latência ultrapassou 500 ms."
