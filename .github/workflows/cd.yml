@@ -1,0 +1,169 @@
+name: CD
+
+# Pipeline de Entrega Contínua (Fase 2).
+#
+# É acionado somente quando o pipeline de Integração Contínua termina com
+# sucesso na branch principal — a esteira de CD nunca parte de um código que
+# não foi validado. As etapas são: publicar a imagem no registro de containers,
+# analisar a imagem em busca de vulnerabilidades, implantar em homologação
+# usando o script de deploy e validar o ambiente com o teste de fumaça.
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      versao:
+        description: "Rótulo adicional aplicado à imagem publicada"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRO: ghcr.io
+
+jobs:
+  publicar:
+    name: Publicar a imagem no registro
+    # Uma execução de CI que falhou nunca gera entrega.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      imagem: ${{ steps.metadados.outputs.imagem }}
+      tag: ${{ steps.metadados.outputs.tag }}
+      digest: ${{ steps.publicacao.outputs.digest }}
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v4
+
+      - name: Definir os rótulos da imagem
+        id: metadados
+        run: |
+          versao="$(grep -oP '(?<=^__version__ = ")[^"]+' app/__init__.py)"
+          curto="$(git rev-parse --short HEAD)"
+          tag="${versao}-${curto}"
+          # O registro de containers aceita apenas nomes em minúsculas.
+          imagem="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "tag=${tag}"
+            echo "versao=${versao}"
+            echo "imagem=${imagem}"
+          } >>"${GITHUB_OUTPUT}"
+          echo "A imagem será publicada como ${imagem}:${tag}."
+
+      - name: Preparar o Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Autenticar no registro de containers
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRO }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construir e publicar a imagem
+        id: publicacao
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.metadados.outputs.imagem }}:latest
+            ${{ steps.metadados.outputs.imagem }}:${{ steps.metadados.outputs.tag }}
+            ${{ steps.metadados.outputs.imagem }}:${{ steps.metadados.outputs.versao }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.metadados.outputs.versao }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Registrar o resumo da publicação
+        run: |
+          {
+            echo "### Imagem publicada"
+            echo ""
+            echo "- Repositório: \`${{ steps.metadados.outputs.imagem }}\`"
+            echo "- Rótulo: \`${{ steps.metadados.outputs.tag }}\`"
+            echo "- Digest: \`${{ steps.publicacao.outputs.digest }}\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  analisar-imagem:
+    name: Análise de vulnerabilidades da imagem
+    needs: publicar
+    runs-on: ubuntu-latest
+    steps:
+      - name: Autenticar no registro de containers
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRO }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Analisar a imagem publicada com o Trivy
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ needs.publicar.outputs.imagem }}:${{ needs.publicar.outputs.tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"
+
+  implantar:
+    name: Implantar em homologação
+    needs:
+      - publicar
+      - analisar-imagem
+    runs-on: ubuntu-latest
+    environment:
+      name: homologacao
+    steps:
+      - name: Obter o código
+        uses: actions/checkout@v4
+
+      - name: Autenticar no registro de containers
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRO }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Executar o script de deploy com a imagem publicada
+        env:
+          REGISTRY_IMAGE: ${{ needs.publicar.outputs.imagem }}
+        run: ./scripts/deploy.sh "${{ needs.publicar.outputs.tag }}" 8000
+
+      - name: Conferir a versão implantada
+        run: |
+          echo "Resposta do healthcheck do ambiente implantado:"
+          curl --silent --fail http://127.0.0.1:8000/health
+
+      - name: Coletar os logs estruturados da aplicação
+        if: always()
+        run: docker logs inventario-api | tail -n 30
+
+      - name: Registrar o resumo da implantação
+        run: |
+          {
+            echo "### Implantação em homologação"
+            echo ""
+            echo "- Imagem implantada: \`${{ needs.publicar.outputs.imagem }}:${{ needs.publicar.outputs.tag }}\`"
+            echo "- Teste de fumaça: aprovado"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Encerrar o ambiente efêmero
+        if: always()
+        run: docker compose down --remove-orphans || true
