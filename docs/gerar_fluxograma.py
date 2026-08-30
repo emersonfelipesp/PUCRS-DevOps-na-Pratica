@@ -164,7 +164,8 @@ def etapa_desenvolvimento(eixo):
 def etapa_integracao(eixo, colunas):
     """Desenha a faixa de integração contínua e o barramento de distribuição."""
     y = 9.05
-    faixa(eixo, 8.2, 1.95, "2. Integração Contínua (Fase 1) — .github/workflows/ci.yml", CORES["ci"])
+    titulo = "2. Integração Contínua (Fase 1) — .github/workflows/ci.yml"
+    faixa(eixo, 8.2, 1.95, titulo, CORES["ci"])
     rotulos = (
         "Análise estática\nruff check\nruff format",
         "Testes\npytest 3.11 e 3.12\ncobertura ≥ 90%",
@@ -196,7 +197,15 @@ def etapa_portao(eixo, colunas):
     """Desenha o portão de integração, o barramento de retorno e o caminho de falha."""
     y = 7.05
     faixa(eixo, 6.4, 1.45, "3. Portão de integração", CORES["gate"])
-    caixa(eixo, 6.2, y, "Todas as verificações\nforam aprovadas?", CORES["gate"], largura=3.3, cor_texto="#1D1D1D")
+    caixa(
+        eixo,
+        6.2,
+        y,
+        "Todas as verificações\nforam aprovadas?",
+        CORES["gate"],
+        largura=3.3,
+        cor_texto="#1D1D1D",
+    )
     caixa(eixo, 10.6, y, "Merge na main\ncódigo integrado", CORES["gate"], cor_texto="#1D1D1D")
     caixa(eixo, 15.8, y, "Correção na\nbranch de origem", CORES["falha"], largura=2.8)
 
@@ -227,7 +236,8 @@ def etapa_portao(eixo, colunas):
 def etapa_entrega(eixo):
     """Desenha a faixa de entrega contínua, o rollback e a entrada vinda do merge."""
     y = 5.0
-    faixa(eixo, 3.5, 2.55, "4. Entrega Contínua (Fase 2) — .github/workflows/cd.yml", CORES["cd"])
+    titulo = "4. Entrega Contínua (Fase 2) — .github/workflows/cd.yml"
+    faixa(eixo, 3.5, 2.55, titulo, CORES["cd"])
     colunas = (2.9, 6.35, 9.8, 13.25, 16.7)
     rotulos = (
         "CI verde na main\naciona a esteira de CD",
@@ -248,7 +258,15 @@ def etapa_entrega(eixo):
         rotulo_em=(8.2, 6.06),
     )
 
-    caixa(eixo, 6.35, 4.0, "Rollback automático\npara a versão anterior", CORES["falha"], largura=3.4, altura=0.72)
+    caixa(
+        eixo,
+        6.35,
+        4.0,
+        "Rollback automático\npara a versão anterior",
+        CORES["falha"],
+        largura=3.4,
+        altura=0.72,
+    )
     caminho(
         eixo,
         [(16.7, 4.41), (16.7, 4.0), (8.1, 4.0)],
@@ -264,7 +282,14 @@ def etapa_operacao(eixo):
     """Desenha a faixa de operação e o retorno do monitoramento."""
     y = 2.1
     faixa(eixo, 1.25, 1.9, "5. Operação, monitoramento e retorno", CORES["obs"])
-    caixa(eixo, 3.4, y, "Aplicação em execução\ncontainer sem privilégios", CORES["obs"], largura=3.6)
+    caixa(
+        eixo,
+        3.4,
+        y,
+        "Aplicação em execução\ncontainer sem privilégios",
+        CORES["obs"],
+        largura=3.6,
+    )
     caixa(eixo, 7.8, y, "Métricas\nPrometheus /metrics", CORES["obs"])
     caixa(eixo, 12.0, y, "Painéis e alertas\nGrafana e alerts.yml", CORES["obs"], largura=3.2)
     caixa(eixo, 16.2, y, "Logs em JSON\npor requisição", CORES["obs"])

@@ -1,0 +1,3 @@
+# Dependência usada apenas para regerar o fluxograma:
+#   pip install -r docs/requirements.txt && python docs/gerar_fluxograma.py
+matplotlib==3.11.1
