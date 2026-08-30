@@ -1,0 +1,6 @@
+# Copie para terraform.tfvars e ajuste conforme o ambiente de destino.
+nome_ambiente = "homologacao"
+imagem        = "ghcr.io/emersonfelipesp/pucrs-devops-na-pratica:latest"
+porta_externa = 8000
+replicas      = 2
+nivel_de_log  = "INFO"

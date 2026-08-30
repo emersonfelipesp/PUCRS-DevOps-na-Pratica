@@ -1,0 +1,10 @@
+# Rotação dos logs da aplicação {{ app_nome }} — gerado pelo Ansible.
+/var/log/{{ app_nome }}/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

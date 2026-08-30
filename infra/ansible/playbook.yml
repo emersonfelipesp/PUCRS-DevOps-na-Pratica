@@ -1,0 +1,43 @@
+---
+# Configuração do host de aplicação e publicação da stack do inventário.
+#
+# Execução:
+#   ansible-playbook -i inventory.ini playbook.yml
+#   ansible-playbook -i inventory.ini playbook.yml --check --diff
+#
+# O playbook é idempotente: a segunda execução não altera nada quando o host
+# já está no estado desejado.
+
+- name: Configurar o host de aplicação do inventário de rede
+  hosts: homologacao
+  become: false
+  gather_facts: true
+
+  vars:
+    app_nome: inventario-rede
+    app_diretorio: /opt/inventario-rede
+    app_imagem: ghcr.io/emersonfelipesp/pucrs-devops-na-pratica:latest
+    app_porta: 8000
+    app_nivel_de_log: INFO
+    pacotes_requeridos:
+      - curl
+      - ca-certificates
+
+  pre_tasks:
+    - name: Garantir que o sistema operacional é suportado
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == 'Debian'
+        fail_msg: >-
+          Este playbook foi escrito para distribuições da família Debian.
+        success_msg: Sistema operacional suportado.
+
+  roles:
+    - role: app
+
+  post_tasks:
+    - name: Registrar o resumo da configuração aplicada
+      ansible.builtin.debug:
+        msg: >-
+          Host {{ inventory_hostname }} configurado para executar
+          {{ app_nome }} ({{ app_imagem }}) na porta {{ app_porta }}.

@@ -1,0 +1,38 @@
+---
+# Tarefas de configuração do host de aplicação.
+
+- name: Instalar os pacotes de apoio exigidos pelo deploy
+  ansible.builtin.package:
+    name: "{{ pacotes_requeridos }}"
+    state: present
+  become: true
+  tags:
+    - pacotes
+
+- name: Criar o diretório da aplicação
+  ansible.builtin.file:
+    path: "{{ app_diretorio }}"
+    state: directory
+    mode: "0755"
+  become: true
+  tags:
+    - configuracao
+
+- name: Publicar o arquivo de ambiente consumido pelo Docker Compose
+  ansible.builtin.template:
+    src: app.env.j2
+    dest: "{{ app_diretorio }}/.env"
+    mode: "0640"
+  become: true
+  notify: Reiniciar a stack da aplicação
+  tags:
+    - configuracao
+
+- name: Publicar o script de rotação dos logs da aplicação
+  ansible.builtin.template:
+    src: logrotate.j2
+    dest: "/etc/logrotate.d/{{ app_nome }}"
+    mode: "0644"
+  become: true
+  tags:
+    - logging
