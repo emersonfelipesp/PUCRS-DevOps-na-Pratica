@@ -75,9 +75,17 @@ jobs:
       - name: Executar a suíte de testes com cobertura mínima de 90%
         run: pytest --cov-report=xml
 
-      - name: Publicar o relatório de cobertura
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Publicar o relatório de cobertura no GitHub
+        if: ${{ always() && github.server_url == 'https://github.com' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cobertura-py${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: warn
+
+      - name: Publicar o relatório de cobertura no Gitea
+        if: ${{ always() && github.server_url != 'https://github.com' }}
+        uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf
         with:
           name: cobertura-py${{ matrix.python-version }}
           path: coverage.xml
