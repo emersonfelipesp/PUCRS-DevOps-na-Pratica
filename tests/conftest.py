@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 os.environ["SEED_DEVICES"] = "false"
+os.environ["OTEL_SDK_DISABLED"] = "true"
 
 from app.main import app  # noqa: E402
 from app.storage import repository  # noqa: E402

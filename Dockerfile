@@ -3,8 +3,8 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+COPY requirements-runtime.lock ./requirements.txt
+RUN pip install --no-cache-dir --require-hashes --prefix=/install -r requirements.txt
 
 # Estágio final: imagem enxuta, sem compiladores e sem cache de pacotes.
 FROM python:3.12-slim AS runtime
