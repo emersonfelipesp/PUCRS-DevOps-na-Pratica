@@ -21,4 +21,8 @@ pythonpath = ["."]
 addopts = "-q --cov=app --cov-report=term-missing --cov-fail-under=90"
 
 [tool.coverage.run]
+patch = ["subprocess"]
 omit = ["tests/*"]
+
+[tool.uv]
+managed = false

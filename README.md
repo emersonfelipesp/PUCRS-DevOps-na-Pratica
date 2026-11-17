@@ -222,3 +222,18 @@ duração em milissegundos — formato pronto para ingestão por um agregador.
 ## Licença
 
 Trabalho acadêmico produzido para a disciplina DevOps na Prática da PUCRS.
+
+## Native OpenTelemetry
+
+The inventory service uses FastAPI 0.143.0 and its native OpenTelemetry integration. It does not configure a collector by default. Existing Prometheus `/metrics` and JSON application logging remain available independently. To enable automatic export of native HTTP traces, request metrics, validation/error logs, and WebSocket traces/logs, set `FASTAPI_OTEL_AUTO_CONFIGURE=true` and `OTEL_EXPORTER_OTLP_ENDPOINT` before starting the service. Set `OTEL_SERVICE_NAME` only if a custom service name is needed. Signal-specific `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, and `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` take precedence for their signals. `OTEL_SDK_DISABLED=true` disables SDK setup, and the standard signal exporter `none` controls remain supported. An explicitly empty base endpoint leaves automatic base export unconfigured.
+
+Native privacy processors remove concrete request paths, query values, and arbitrary exception messages/stack traces while retaining route templates, timing, and exception classification. They operate on the providers selected by the application. Applications embedding `create_app(telemetry=...)` retain their caller-owned providers. Callers that configure their own exporters should set `auto_configure=False`, install the privacy processors before their exporter processors, and own flushing and shutdown. Earlier caller-installed log exporters require caller-managed processor ordering.
+
+The factory copies the caller's telemetry configuration. When `OTEL_SDK_DISABLED=true`, it disables native auto-configuration, tracing, metrics, and logs without mutating the caller's mapping or replacing its providers. Privacy processors still sanitize selected existing SDK providers. Automatic proxy-provider replacement requires the SDK, signal, auto-configuration, exporter, and endpoint controls to permit export.
+
+The subprocess OTLP contract tests decode actual local protobuf exports and verify privacy, signal controls, explicit providers, repeated lifespans, and the unconfigured default. The SDK-disabled regression probes exercise active caller-owned trace, metric, and log exporters with explicit and global providers, success responses, validation failures, application errors, and repeated lifespans. They separately observe earlier caller-installed log exporters during the disabled phase and later exporters after privacy processors are installed; they do not claim that a later processor can redact a record already exported by an earlier processor. Coverage includes subprocess execution and retains the existing 90% gate. Routine tests disable ambient telemetry to avoid exporting test traffic.
+
+Native FastAPI automatic setup is opt-in through `FASTAPI_OTEL_AUTO_CONFIGURE=true`.
+An explicit caller `auto_configure` dictionary value takes precedence. Endpoint
+values alone do not enable automatic setup. SDK disabling copies and disables
+all four native controls while preserving selected caller privacy and ownership.

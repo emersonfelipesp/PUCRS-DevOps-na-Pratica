@@ -2,7 +2,8 @@ name: CI
 
 # Pipeline de Integração Contínua (Fase 1).
 #
-# Executa a cada push e a cada pull request. As etapas são independentes e
+# Executa em pushes para main, pull requests para main e acionamento manual.
+# As etapas são independentes e
 # rodam em paralelo; a etapa final só é concluída quando todas passam, o que
 # torna o resultado do pipeline o critério objetivo para aceitar a integração
 # de uma alteração na branch principal.
@@ -11,7 +12,6 @@ on:
   push:
     branches:
       - main
-      - "feature/**"
   pull_request:
     branches:
       - main
@@ -166,15 +166,80 @@ jobs:
           context: .
           push: false
           load: true
-          tags: inventario-rede:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: inventario-rede:ci-${{ github.run_id }}-${{ github.run_attempt }}
+          cache-from: ${{ github.server_url == 'https://github.com' && 'type=gha' || '' }}
+          cache-to: ${{ github.server_url == 'https://github.com' && 'type=gha,mode=max' || '' }}
 
       - name: Subir o container e validar o healthcheck
+        id: owned-container
+        shell: bash
+        env:
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+          CI_HOST_RUNNER: ${{ github.server_url == 'https://github.com' }}
         run: |
-          docker run -d --name inventario-ci -p 8000:8000 inventario-rede:ci
+          set -euo pipefail
+
+          job_container_id() {
+            local job_hostname identity job_cid observed_hostname
+            read -r job_hostname < /etc/hostname || return 1
+            [[ "$job_hostname" =~ ^[a-f0-9]{12}$ ]] || return 1
+            [[ "${HOSTNAME:-}" == "$job_hostname" ]] || return 1
+            identity="$(docker inspect -f '{{.Id}} {{.Config.Hostname}} {{.State.Running}}' "$job_hostname")" || return 1
+            [[ "$identity" =~ ^([a-f0-9]{64})[[:space:]]([a-f0-9]{12})[[:space:]]true$ ]] || return 1
+            job_cid="${BASH_REMATCH[1]}"
+            observed_hostname="${BASH_REMATCH[2]}"
+            [[ "$observed_hostname" == "$job_hostname" ]] || return 1
+            [[ "${job_cid:0:12}" == "$job_hostname" ]] || return 1
+            printf '%s\n' "$job_cid"
+          }
+
+          job_network_metadata() {
+            local network_name identity
+            network_name="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' "$1")" || return 1
+            [[ "$network_name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] || return 1
+            case "$network_name" in bridge|host|none) return 1 ;; esac
+            identity="$(docker network inspect -f '{{.Id}} {{.Driver}} {{.Scope}}' "$network_name")" || return 1
+            [[ "$identity" =~ ^([a-f0-9]{64})[[:space:]]bridge[[:space:]]local$ ]] || return 1
+            printf '%s %s\n' "${BASH_REMATCH[1]}" "$network_name"
+          }
+
+          verify_owned_target() {
+            [[ "$(docker inspect -f '{{.Id}}' "$1")" == "$1" ]] || return 1
+            [[ "$(docker inspect -f '{{.Name}}' "$1")" == "/$2" ]] || return 1
+            if [ -n "$3" ]; then
+              local configured_network
+              configured_network="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$1")" || return 1
+              case "$configured_network" in "$3"|"$4") ;; *) return 1 ;; esac
+            fi
+          }
+
+          [[ "${CI_RUN_ID}:${CI_RUN_ATTEMPT}" =~ ^[0-9]+:[0-9]+$ ]]
+          container_name="inventario-ci-${CI_RUN_ID}-${CI_RUN_ATTEMPT}"
+          [[ "${#container_name}" -le 63 ]]
+          image="inventario-rede:ci-${CI_RUN_ID}-${CI_RUN_ATTEMPT}"
+          job_cid=""
+          network_id=""
+          network_name=""
+          case "$CI_HOST_RUNNER" in
+            true)
+              cid="$(docker create --name "$container_name" -p 127.0.0.1::8000 "$image")"
+              ;;
+            false)
+              job_cid="$(job_container_id)"
+              network_metadata="$(job_network_metadata "$job_cid")"
+              read -r network_id network_name <<< "$network_metadata"
+              cid="$(docker create --name "$container_name" --network "$network_id" "$image")"
+              ;;
+            *) exit 1 ;;
+          esac
+          [[ "$cid" =~ ^[a-f0-9]{64}$ ]]
+          printf 'cid=%s\n' "$cid" >> "$GITHUB_OUTPUT"
+          verify_owned_target "$cid" "$container_name" "$network_id" "$network_name"
+          printf 'job_cid=%s\nnetwork_id=%s\n' "$job_cid" "$network_id" >> "$GITHUB_OUTPUT"
+          docker start "$cid"
           for tentativa in $(seq 1 20); do
-            estado="$(docker inspect -f '{{.State.Health.Status}}' inventario-ci)"
+            estado="$(docker inspect -f '{{.State.Health.Status}}' "$cid")"
             if [ "${estado}" = "healthy" ]; then
               echo "Container saudável na tentativa ${tentativa}."
               exit 0
@@ -182,15 +247,72 @@ jobs:
             sleep 3
           done
           echo "O container não ficou saudável a tempo." >&2
-          docker logs inventario-ci
+          docker logs "$cid"
           exit 1
 
       - name: Executar o teste de fumaça contra o container
-        run: ./scripts/smoke-test.sh http://127.0.0.1:8000
+        shell: bash
+        env:
+          CI_CONTAINER_ID: ${{ steps.owned-container.outputs.cid }}
+          CI_HOST_RUNNER: ${{ github.server_url == 'https://github.com' }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+          CI_JOB_CONTAINER_ID: ${{ steps.owned-container.outputs.job_cid }}
+          CI_JOB_NETWORK_ID: ${{ steps.owned-container.outputs.network_id }}
+        run: |
+          set -euo pipefail
+
+          validate_job_association() {
+            local job_hostname
+            [[ "$CI_JOB_CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]] || return 1
+            [[ "$CI_JOB_NETWORK_ID" =~ ^[a-f0-9]{64}$ ]] || return 1
+            read -r job_hostname < /etc/hostname || return 1
+            [[ "${CI_JOB_CONTAINER_ID:0:12}" == "$job_hostname" ]] || return 1
+            [[ "${HOSTNAME:-}" == "$job_hostname" ]] || return 1
+            [[ "$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{"\n"}}{{end}}' "$CI_JOB_CONTAINER_ID")" == "$CI_JOB_NETWORK_ID" ]] || return 1
+          }
+
+          container_smoke_url() {
+            local container_name
+            validate_job_association || return 1
+            [[ "${CI_RUN_ID}:${CI_RUN_ATTEMPT}" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+            container_name="inventario-ci-${CI_RUN_ID}-${CI_RUN_ATTEMPT}"
+            [[ "${#container_name}" -le 63 ]] || return 1
+            [[ "$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.NetworkID}}{{"\n"}}{{end}}' "$CI_CONTAINER_ID")" == "$CI_JOB_NETWORK_ID" ]] || return 1
+            [[ "$(docker inspect -f '{{.Name}}' "$CI_CONTAINER_ID")" == "/$container_name" ]] || return 1
+            printf 'http://%s:8000\n' "$container_name"
+          }
+
+          [[ "$CI_CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]]
+          case "$CI_HOST_RUNNER" in
+            true)
+              binding="$(docker port "$CI_CONTAINER_ID" 8000/tcp)"
+              [[ "$binding" =~ ^127\.0\.0\.1:([1-9][0-9]{0,4})$ ]]
+              port="${BASH_REMATCH[1]}"
+              (( 10#$port <= 65535 ))
+              smoke_url="http://127.0.0.1:$port"
+              ;;
+            false)
+              smoke_url="$(container_smoke_url)"
+              ;;
+            *) exit 1 ;;
+          esac
+          ./scripts/smoke-test.sh "$smoke_url"
 
       - name: Encerrar o container de verificação
         if: always()
-        run: docker rm -f inventario-ci || true
+        shell: bash
+        env:
+          CI_CONTAINER_ID: ${{ steps.owned-container.outputs.cid }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CI_CONTAINER_ID" ]; then
+            echo "No validated container ID was recorded; no container is removed."
+            exit 0
+          fi
+          [[ "$CI_CONTAINER_ID" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$(docker inspect -f '{{.Id}}' "$CI_CONTAINER_ID")" == "$CI_CONTAINER_ID" ]]
+          docker rm -f "$CI_CONTAINER_ID"
 
   integracao-aprovada:
     name: Integração aprovada
