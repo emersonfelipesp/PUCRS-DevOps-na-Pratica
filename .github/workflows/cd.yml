@@ -39,16 +39,61 @@ jobs:
     name: Publicar a imagem no registro
     # Uma execução de CI que falhou nunca gera entrega.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      github.repository == 'emersonfelipesp/PUCRS-DevOps-na-Pratica' &&
+      github.event.repository.full_name == 'emersonfelipesp/PUCRS-DevOps-na-Pratica' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
     runs-on: ubuntu-latest
     outputs:
       imagem: ${{ steps.metadados.outputs.imagem }}
       tag: ${{ steps.metadados.outputs.tag }}
       digest: ${{ steps.publicacao.outputs.digest }}
+      source_sha: ${{ steps.qualified-source.outputs.sha }}
     steps:
+      - name: Qualificar a origem do código
+        id: qualified-source
+        shell: bash
+        env:
+          CI_REPOSITORY: ${{ github.repository }}
+          CI_PAYLOAD_REPOSITORY: ${{ github.event.repository.full_name }}
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_MANUAL_SHA: ${{ github.sha }}
+          CI_TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          CI_TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          CI_TRIGGER_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CI_TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CI_REPOSITORY" == emersonfelipesp/PUCRS-DevOps-na-Pratica ]]
+          [[ "$CI_PAYLOAD_REPOSITORY" == emersonfelipesp/PUCRS-DevOps-na-Pratica ]]
+          if [ "$CI_EVENT_NAME" = workflow_dispatch ]; then
+            source_sha="$CI_MANUAL_SHA"
+          else
+            [[ "$CI_EVENT_NAME" == workflow_run ]]
+            [[ "$CI_TRIGGER_EVENT" == push ]]
+            [[ "$CI_TRIGGER_CONCLUSION" == success ]]
+            [[ "$CI_TRIGGER_BRANCH" == main ]]
+            source_sha="$CI_TRIGGER_SHA"
+          fi
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+          printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+
       - name: Obter o código
         uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.qualified-source.outputs.sha }}
+          persist-credentials: false
+
+      - name: Conferir a identidade do checkout
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ steps.qualified-source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
 
       - name: Definir os rótulos da imagem
         id: metadados
@@ -86,10 +131,10 @@ jobs:
             ${{ steps.metadados.outputs.imagem }}:${{ steps.metadados.outputs.tag }}
             ${{ steps.metadados.outputs.imagem }}:${{ steps.metadados.outputs.versao }}
           labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.qualified-source.outputs.sha }}
             org.opencontainers.image.version=${{ steps.metadados.outputs.versao }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: ${{ github.server_url == 'https://github.com' && 'type=gha' || '' }}
+          cache-to: ${{ github.server_url == 'https://github.com' && 'type=gha,mode=max' || '' }}
 
       - name: Registrar o resumo da publicação
         run: |
@@ -133,6 +178,17 @@ jobs:
     steps:
       - name: Obter o código
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publicar.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Conferir a identidade do checkout
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.publicar.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
 
       - name: Autenticar no registro de containers
         uses: docker/login-action@v3
